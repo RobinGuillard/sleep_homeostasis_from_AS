@@ -23,3 +23,7 @@ sdist/
 
 # vscode
 .vscode/
+
+#REm_propensity
+figures/REM_propensity_explorations/
+old_REM_propensity/

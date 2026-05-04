@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 import yaml
 
+from sleep.unified_for_PVT import Unified_for_PVT
 from sleep.unified import Unified
 from sleep.two_process import TwoProcess
 from sleep.utils.io import normalise_inputs, to_flat_cpu_array
@@ -18,8 +19,87 @@ import matplotlib.pyplot as plt
 METHODS = {
     "unified": Unified,
     "two_process": TwoProcess,
+    "unified_for_PVT": Unified_for_PVT,  # same backend as unified but with PVT output
 }
 SUPPORTED = list(METHODS.keys())
+
+
+def array_to_diary(
+    arr: np.ndarray,
+    key: str = "participant",
+    rested_idx: int = 0,
+) -> pd.DataFrame:
+    """Convert a (2, N) sleep/wake array to a diary DataFrame.
+
+    Parameters
+    ----------
+    arr : np.ndarray, shape (2, N)
+        Row 0: time axis (in hours).
+        Row 1: sleep/wake signal (0 = wake, 1 = sleep).
+    key : str
+        Identifier for this participant/diary.
+    rested_idx : int
+        Index (0-based) in the resulting diary rows considered as the
+        fully-rested reference point. Index 0 is the initial row
+        (asleep=NaN), index 1 is the first sleep bout, etc.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns ``key``, ``asleep``, ``awake``, ``rested``
+        compatible with the ``Model`` class.
+    """
+    if arr.ndim != 2 or arr.shape[0] != 2:
+        raise ValueError("arr must have shape (2, N): row 0 = time, row 1 = sleep/wake signal.")
+
+    time = arr[0]
+    signal = arr[1].astype(int)
+
+    if not np.all(np.isin(signal, [0, 1])):
+        raise ValueError("Signal row must contain only 0 (wake) and 1 (sleep).")
+
+    # Extract transitions (0=wake, 1=sleep)
+    diffs = np.diff(signal)
+    asleep_times = time[np.where(diffs == 1)[0] + 1]   # wake→sleep (0→1)
+    awake_times  = time[np.where(diffs == -1)[0] + 1]  # sleep→wake (1→0)
+
+    # Handle boundary: recording starts during sleep
+    if signal[0] == 1:
+        asleep_times = np.concatenate([[time[0]], asleep_times])
+    # Handle boundary: recording ends during sleep
+    if signal[-1] == 1:
+        awake_times = np.concatenate([awake_times, [time[-1]]])
+
+    n_bouts = min(len(asleep_times), len(awake_times))
+    if n_bouts == 0:
+        raise ValueError("No complete sleep bouts found in the signal.")
+
+    asleep_times = asleep_times[:n_bouts]
+    awake_times  = awake_times[:n_bouts]
+
+    # Build diary rows. Model convention:
+    #   row 0      : asleep=NaN, awake=time[0]  (start of recording)
+    #   row i>=1   : asleep=asleep_times[i-1], awake=awake_times[i-1]
+    # Each row corresponds to exactly one sleep bout (correct 1-to-1 pairing).
+    rows = [{"key": key, "asleep": np.nan, "awake": time[0], "rested": False}]
+    for i in range(n_bouts):
+        rows.append({
+            "key": key,
+            "asleep": asleep_times[i],
+            "awake": awake_times[i],
+            "rested": False,
+        })
+
+    df = pd.DataFrame(rows)
+
+    if rested_idx < 0 or rested_idx >= len(df):
+        raise ValueError(
+            f"rested_idx={rested_idx} is out of range for {len(df)} diary rows "
+            f"(after filtering bouts < {min_sleep_duration}h)."
+        )
+    df.loc[rested_idx, "rested"] = True
+
+    return df
 
 KEY_TYPE = str | int | Sequence | np.ndarray | pd.Series
 TIME_TYPE = float | Sequence | np.ndarray | pd.Series
@@ -40,7 +120,7 @@ class Model:
         DataFrame containing sleep/wake transitions with columns:
         - "key": Diary identifier
         - "awake": Timestamps of sleep to wake transitions
-        - "asleep": Timestamps of wake tosleep transitions
+        - "asleep": Timestamps of wake to sleep transitions
 
     Example
     -------
@@ -64,6 +144,45 @@ class Model:
         - If time is torch.Tensor: returns dict[str, torch.Tensor]
         - Otherwise: returns dict[str, np.ndarray]
     """
+
+    @classmethod
+    def from_array(
+        cls,
+        name: str,
+        arr: np.ndarray,
+        rested_idx: int,
+        key: str = "participant",
+    ) -> "Model":
+        """Instantiate a Model from a (2, N) sleep/wake NumPy array.
+
+        Parameters
+        ----------
+        name : str
+            Backend model name (e.g. ``"unified_for_PVT"``).
+        arr : np.ndarray, shape (2, N)
+            Row 0: time axis in hours.
+            Row 1: binary sleep/wake signal (0 = wake, 1 = sleep).
+        rested_idx : int
+            0-based index of the diary row that represents the fully-rested
+            reference point (passed directly to :func:`array_to_diary`).
+            Index 0 is the initial row (asleep=NaN), index 1 is the first
+            sleep bout, etc.
+        key : str, optional
+            Label used as the diary identifier. Defaults to ``"participant"``.
+
+        Returns
+        -------
+        Model
+            A fully initialised :class:`Model` instance.
+
+        Example
+        -------
+        >>> arr = np.load("final_sleep_wake.npy")   # shape (2, N)
+        >>> model = Model.from_array("unified_for_PVT", arr, rested_idx=5)
+        >>> out = model.compute("participant", time_array)
+        """
+        diary = array_to_diary(arr, key=key, rested_idx=rested_idx)
+        return cls(name, diary)
 
     def __init__(self, name: str, diary: pd.DataFrame):
         """Initialize the Model class."""

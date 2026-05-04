@@ -12,4 +12,40 @@ two_process:
     t_s: 4.51
     T: 24.0
     need: 8.0
-    
+
+REM_three_process_charge:
+  default:
+    t_w: 6
+    t_NREM: 9
+    t_REM: 2.5
+    T: 24.0
+    need: 8.0
+
+REM_three_process_discharge:
+  default:
+    t_w: 6
+    t_NREM: 6
+    t_REM: 2.5
+    T: 24.0
+    need: 8.0
+
+REM_three_process_neutral:
+  default:
+    t_NREM: 6
+    t_REM: 2.5
+    T: 24.0
+    need: 8.0
+
+unified_for_PVT:
+  default:
+    T: 24.0
+    need: 8.0
+    t_w: 40.0
+    t_s: 1.0
+    t_la: 97.4
+    U: 24.12
+    kappa: 4.13
+    phi: 2.02
+    s0: 0.5
+    d0: 0.5
+
